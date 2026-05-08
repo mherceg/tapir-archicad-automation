@@ -1289,10 +1289,19 @@ static GS::Optional<GS::ObjectState> SetOpeningParameters (
         element.window.objLoc = position;
     }
 
-    // Sill height (floor-to-sill distance)
+    // Anchor the sill to the wall bottom so subFloorThickness behaves
+    // intuitively (= height of the sill above the wall's base).
+    // Default doors/windows inherit Header-anchored or Story-anchored modes,
+    // which causes the sill to drift when the wall sits above story 0.
+    element.window.openingBase.verticalLink.linkType  = API_LinkSillToWallBottom;
+    element.window.openingBase.verticalLink.linkValue = 0;
+
+    // Sill height (sill above wall bottom)
     double sillHeight = 0.0;
     if (parameters.Get ("sillHeight", sillHeight)) {
         element.window.openingBase.subFloorThickness = sillHeight;
+    } else {
+        element.window.openingBase.subFloorThickness = 0.0;
     }
 
     // Flip flags
