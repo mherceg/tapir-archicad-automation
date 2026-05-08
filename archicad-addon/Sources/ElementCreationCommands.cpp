@@ -1226,17 +1226,17 @@ GS::Optional<GS::ObjectState> CreateWallsCommand::SetTypeSpecificParameters (
     const API_Guid compositeGuid = GetGuidFromArrayItem ("compositeAttributeId", parameters);
     if (compositeGuid != APINULLGuid) {
         element.wall.composite              = GetAttributeIndexFromGuid (API_CompWallID, compositeGuid);
-        element.wall.modelElemStructureType = APIModelElemStructure_Composite;
+        element.wall.modelElemStructureType = API_CompositeStructure;
     } else {
         const API_Guid bmGuid = GetGuidFromArrayItem ("buildingMaterialAttributeId", parameters);
         if (bmGuid != APINULLGuid) {
             element.wall.buildingMaterial       = GetAttributeIndexFromGuid (API_BuildingMaterialID, bmGuid);
-            element.wall.modelElemStructureType = APIModelElemStructure_Basic;
+            element.wall.modelElemStructureType = API_BasicStructure;
         } else {
             double thickness = 0.25;
             parameters.Get ("thickness", thickness);
             element.wall.thickness              = thickness;
-            element.wall.modelElemStructureType = APIModelElemStructure_Basic;
+            element.wall.modelElemStructureType = API_BasicStructure;
         }
     }
 
@@ -1286,7 +1286,7 @@ static GS::Optional<GS::ObjectState> SetOpeningParameters (
     // Position along wall from wall start (centre of the opening)
     double position = 0.0;
     if (parameters.Get ("position", position)) {
-        element.window.openingBase.objLoc = position;
+        element.window.objLoc = position;
     }
 
     // Sill height (floor-to-sill distance)
@@ -1299,8 +1299,8 @@ static GS::Optional<GS::ObjectState> SetOpeningParameters (
     bool flipX = false, flipY = false;
     parameters.Get ("flipX", flipX);
     parameters.Get ("flipY", flipY);
-    if (flipX) element.window.reflected = !element.window.reflected;
-    if (flipY) element.window.oSide     = !element.window.oSide;
+    if (flipX) element.window.openingBase.reflected = !element.window.openingBase.reflected;
+    if (flipY) element.window.openingBase.oSide     = !element.window.openingBase.oSide;
 
     // Layer
     const API_Guid layerGuid = GetGuidFromArrayItem ("layerAttributeId", parameters);
@@ -1309,69 +1309,6 @@ static GS::Optional<GS::ObjectState> SetOpeningParameters (
     }
 
     return {};
-}
-
-static GS::UniString GetOpeningSchema (const GS::String& arrayFieldName, const GS::String& description)
-{
-    return GS::UniString::Printf (R"({
-    "type": "object",
-    "properties": {
-        "%s": {
-            "type": "array",
-            "description": "%s",
-            "items": {
-                "type": "object",
-                "description": "Parameters of a single opening.",
-                "properties": {
-                    "hostWallId": {
-                        "$ref": "#/ElementId",
-                        "description": "GUID of the host wall."
-                    },
-                    "libraryPartName": {
-                        "type": "string",
-                        "description": "Name of the library part. Uses the current default if omitted."
-                    },
-                    "position": {
-                        "type": "number",
-                        "description": "Distance from wall start to the centre of the opening, in metres."
-                    },
-                    "sillHeight": {
-                        "type": "number",
-                        "description": "Sill height (floor to sill bottom) in metres. Default: 0."
-                    },
-                    "openingWidth": {
-                        "type": "number",
-                        "description": "Opening width in metres."
-                    },
-                    "openingHeight": {
-                        "type": "number",
-                        "description": "Opening height in metres."
-                    },
-                    "flipX": {
-                        "type": "boolean",
-                        "description": "Flip the opening horizontally. Default: false."
-                    },
-                    "flipY": {
-                        "type": "boolean",
-                        "description": "Flip the opening to the other side of the wall. Default: false."
-                    },
-                    "layerAttributeId": {
-                        "$ref": "#/AttributeId",
-                        "description": "The identifier of the layer attribute."
-                    }
-                },
-                "additionalProperties": false,
-                "required": [
-                    "hostWallId"
-                ]
-            }
-        }
-    },
-    "additionalProperties": false,
-    "required": [
-        "%s"
-    ]
-})", arrayFieldName.ToPrintf (), description.ToPrintf (), arrayFieldName.ToPrintf ());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1385,7 +1322,34 @@ CreateDoorsCommand::CreateDoorsCommand () :
 
 GS::Optional<GS::UniString> CreateDoorsCommand::GetInputParametersSchema () const
 {
-    return GetOpeningSchema ("doorsData", "Array of data to create Doors.");
+    return R"({
+    "type": "object",
+    "properties": {
+        "doorsData": {
+            "type": "array",
+            "description": "Array of data to create Doors.",
+            "items": {
+                "type": "object",
+                "description": "Parameters of a single door.",
+                "properties": {
+                    "hostWallId": { "$ref": "#/ElementId", "description": "GUID of the host wall." },
+                    "libraryPartName": { "type": "string", "description": "Library part name; uses current default if omitted." },
+                    "position": { "type": "number", "description": "Distance from wall start to the centre of the opening, in metres." },
+                    "sillHeight": { "type": "number", "description": "Sill height in metres. Default: 0." },
+                    "openingWidth": { "type": "number", "description": "Opening width in metres." },
+                    "openingHeight": { "type": "number", "description": "Opening height in metres." },
+                    "flipX": { "type": "boolean", "description": "Flip horizontally. Default: false." },
+                    "flipY": { "type": "boolean", "description": "Flip to the other side of the wall. Default: false." },
+                    "layerAttributeId": { "$ref": "#/AttributeId", "description": "The identifier of the layer attribute." }
+                },
+                "additionalProperties": false,
+                "required": [ "hostWallId" ]
+            }
+        }
+    },
+    "additionalProperties": false,
+    "required": [ "doorsData" ]
+})";
 }
 
 GS::Optional<GS::ObjectState> CreateDoorsCommand::SetTypeSpecificParameters (
@@ -1405,7 +1369,34 @@ CreateWindowsCommand::CreateWindowsCommand () :
 
 GS::Optional<GS::UniString> CreateWindowsCommand::GetInputParametersSchema () const
 {
-    return GetOpeningSchema ("windowsData", "Array of data to create Windows.");
+    return R"({
+    "type": "object",
+    "properties": {
+        "windowsData": {
+            "type": "array",
+            "description": "Array of data to create Windows.",
+            "items": {
+                "type": "object",
+                "description": "Parameters of a single window.",
+                "properties": {
+                    "hostWallId": { "$ref": "#/ElementId", "description": "GUID of the host wall." },
+                    "libraryPartName": { "type": "string", "description": "Library part name; uses current default if omitted." },
+                    "position": { "type": "number", "description": "Distance from wall start to the centre of the opening, in metres." },
+                    "sillHeight": { "type": "number", "description": "Sill height in metres. Default: 0." },
+                    "openingWidth": { "type": "number", "description": "Opening width in metres." },
+                    "openingHeight": { "type": "number", "description": "Opening height in metres." },
+                    "flipX": { "type": "boolean", "description": "Flip horizontally. Default: false." },
+                    "flipY": { "type": "boolean", "description": "Flip to the other side of the wall. Default: false." },
+                    "layerAttributeId": { "$ref": "#/AttributeId", "description": "The identifier of the layer attribute." }
+                },
+                "additionalProperties": false,
+                "required": [ "hostWallId" ]
+            }
+        }
+    },
+    "additionalProperties": false,
+    "required": [ "windowsData" ]
+})";
 }
 
 GS::Optional<GS::ObjectState> CreateWindowsCommand::SetTypeSpecificParameters (
@@ -1507,12 +1498,12 @@ GS::Optional<GS::ObjectState> CreateRoofsCommand::SetTypeSpecificParameters (
 
     double baseLevel = 0.0;
     parameters.Get ("baseLevel", baseLevel);
-    element.roof.level = baseLevel;
+    element.roof.shellBase.level = baseLevel;
 
     double slope = 0.20;
     parameters.Get ("slope", slope);
-    element.roof.u.planeRoof.angle = std::atan (slope);
-    element.roof.u.planeRoof.posSign = 1;
+    element.roof.u.planeRoof.angle   = std::atan (slope);
+    element.roof.u.planeRoof.posSign = true;
 
     Int32 pivotEdgeIndex = 0;
     parameters.Get ("pivotEdgeIndex", pivotEdgeIndex);
@@ -1525,7 +1516,7 @@ GS::Optional<GS::ObjectState> CreateRoofsCommand::SetTypeSpecificParameters (
 
     double thickness = 0.20;
     parameters.Get ("thickness", thickness);
-    element.roof.thickness = thickness;
+    element.roof.shellBase.thickness = thickness;
 
     parameters.Get ("floorIndex", element.header.floorInd);
 
@@ -1536,20 +1527,20 @@ GS::Optional<GS::ObjectState> CreateRoofsCommand::SetTypeSpecificParameters (
 
     const API_Guid compositeGuid = GetGuidFromArrayItem ("compositeAttributeId", parameters);
     if (compositeGuid != APINULLGuid) {
-        element.roof.composite              = GetAttributeIndexFromGuid (API_CompWallID, compositeGuid);
-        element.roof.modelElemStructureType = APIModelElemStructure_Composite;
+        element.roof.shellBase.composite              = GetAttributeIndexFromGuid (API_CompWallID, compositeGuid);
+        element.roof.shellBase.modelElemStructureType = API_CompositeStructure;
     } else {
         const API_Guid bmGuid = GetGuidFromArrayItem ("buildingMaterialAttributeId", parameters);
         if (bmGuid != APINULLGuid) {
-            element.roof.buildingMaterial       = GetAttributeIndexFromGuid (API_BuildingMaterialID, bmGuid);
-            element.roof.modelElemStructureType = APIModelElemStructure_Basic;
+            element.roof.shellBase.buildingMaterial       = GetAttributeIndexFromGuid (API_BuildingMaterialID, bmGuid);
+            element.roof.shellBase.modelElemStructureType = API_BasicStructure;
         }
     }
 
     // Outline polygon into memo (same layout as Slab)
-    element.roof.poly.nCoords   = n + 1;
-    element.roof.poly.nSubPolys = 1;
-    element.roof.poly.nArcs     = 0;
+    element.roof.u.planeRoof.poly.nCoords   = n + 1;
+    element.roof.u.planeRoof.poly.nSubPolys = 1;
+    element.roof.u.planeRoof.poly.nArcs     = 0;
 
     memo.coords = reinterpret_cast<API_Coord**> (BMAllocateHandle ((n + 2) * sizeof (API_Coord),    ALLOCATE_CLEAR, 0));
     memo.pends  = reinterpret_cast<Int32**>     (BMAllocateHandle (2       * sizeof (Int32),         ALLOCATE_CLEAR, 0));
