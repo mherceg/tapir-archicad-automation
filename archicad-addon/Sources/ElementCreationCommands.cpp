@@ -1484,7 +1484,7 @@ GS::Optional<GS::UniString> CreateRoofsCommand::GetInputParametersSchema () cons
 }
 
 GS::Optional<GS::ObjectState> CreateRoofsCommand::SetTypeSpecificParameters (
-    API_Element& element, API_ElementMemo& memo, const Stories& /*stories*/, const GS::ObjectState& parameters) const
+    API_Element& element, API_ElementMemo& memo, const Stories& stories, const GS::ObjectState& parameters) const
 {
     GS::Array<GS::ObjectState> outline;
     if (!parameters.Get ("outline", outline) || outline.GetSize () < 3) {
@@ -1496,9 +1496,18 @@ GS::Optional<GS::ObjectState> CreateRoofsCommand::SetTypeSpecificParameters (
         outline.Pop ();
     }
 
+    // Force plane-roof semantics first; zero out the union so any leftover
+    // poly-roof data from GetDefaults can't bleed into u.planeRoof.
+    element.roof.roofClass    = API_PlaneRoofID;
+    element.roof.u.planeRoof  = {};
+
+    // shellBase.level is documented as offset from the floor level, not absolute z.
+    // Derive both floor index and offset from the absolute baseLevel (Slab pattern).
     double baseLevel = 0.0;
     parameters.Get ("baseLevel", baseLevel);
-    element.roof.shellBase.level = baseLevel;
+    const auto floorIndexAndOffset = GetFloorIndexAndOffset (baseLevel, stories);
+    element.header.floorInd          = floorIndexAndOffset.first;
+    element.roof.shellBase.level     = floorIndexAndOffset.second;
 
     double slope = 0.20;
     parameters.Get ("slope", slope);
@@ -1512,13 +1521,9 @@ GS::Optional<GS::ObjectState> CreateRoofsCommand::SetTypeSpecificParameters (
     element.roof.u.planeRoof.baseLine.c1 = Get2DCoordinateFromObjectState (outline[pivotEdgeIndex]);
     element.roof.u.planeRoof.baseLine.c2 = Get2DCoordinateFromObjectState (outline[(pivotEdgeIndex + 1) % n]);
 
-    element.roof.roofClass = API_PlaneRoofID;
-
     double thickness = 0.20;
     parameters.Get ("thickness", thickness);
     element.roof.shellBase.thickness = thickness;
-
-    parameters.Get ("floorIndex", element.header.floorInd);
 
     const API_Guid layerGuid = GetGuidFromArrayItem ("layerAttributeId", parameters);
     if (layerGuid != APINULLGuid) {
@@ -1537,19 +1542,25 @@ GS::Optional<GS::ObjectState> CreateRoofsCommand::SetTypeSpecificParameters (
         }
     }
 
-    // Outline polygon into memo (same layout as Slab)
+    // Outline polygon into memo (same layout as Slab — incl. edgeTrims/sideMaterials,
+    // because the API validator rejects roof polygons missing per-edge data).
     element.roof.u.planeRoof.poly.nCoords   = n + 1;
     element.roof.u.planeRoof.poly.nSubPolys = 1;
     element.roof.u.planeRoof.poly.nArcs     = 0;
 
-    memo.coords = reinterpret_cast<API_Coord**> (BMAllocateHandle ((n + 2) * sizeof (API_Coord),    ALLOCATE_CLEAR, 0));
-    memo.pends  = reinterpret_cast<Int32**>     (BMAllocateHandle (2       * sizeof (Int32),         ALLOCATE_CLEAR, 0));
-    memo.parcs  = reinterpret_cast<API_PolyArc**>(BMAllocateHandle (1      * sizeof (API_PolyArc),   ALLOCATE_CLEAR, 0));
+    memo.coords        = reinterpret_cast<API_Coord**>            (BMAllocateHandle ((n + 2) * sizeof (API_Coord),               ALLOCATE_CLEAR, 0));
+    memo.edgeTrims     = reinterpret_cast<API_EdgeTrim**>         (BMAllocateHandle ((n + 2) * sizeof (API_EdgeTrim),            ALLOCATE_CLEAR, 0));
+    memo.sideMaterials = reinterpret_cast<API_OverriddenAttribute*>(BMAllocatePtr   ((n + 2) * sizeof (API_OverriddenAttribute), ALLOCATE_CLEAR, 0));
+    memo.pends         = reinterpret_cast<Int32**>                (BMAllocateHandle (2       * sizeof (Int32),                   ALLOCATE_CLEAR, 0));
+    memo.parcs         = reinterpret_cast<API_PolyArc**>          (BMAllocateHandle (1       * sizeof (API_PolyArc),             ALLOCATE_CLEAR, 0));
 
+    const API_EdgeTrimID edgeTrimSideType = APIEdgeTrim_Vertical;
     for (Int32 i = 0; i < n; ++i) {
-        (*memo.coords)[i + 1] = Get2DCoordinateFromObjectState (outline[i]);
+        (*memo.coords)[i + 1]            = Get2DCoordinateFromObjectState (outline[i]);
+        (*memo.edgeTrims)[i + 1].sideType = edgeTrimSideType;
     }
-    (*memo.coords)[n + 1] = (*memo.coords)[1]; // close polygon
+    (*memo.coords)[n + 1]            = (*memo.coords)[1]; // close polygon
+    (*memo.edgeTrims)[n + 1].sideType = edgeTrimSideType;
     (*memo.pends)[1] = n + 1;
 
     return {};
