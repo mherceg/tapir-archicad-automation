@@ -319,6 +319,22 @@ GSErrCode Initialize (void)
             elementCommands, "1.2.5",
             "Creates Label elements based on the given parameters."
         );
+        err |= RegisterCommand<CreateWallsCommand> (
+            elementCommands, "1.5.0",
+            "Creates Wall elements based on the given parameters."
+        );
+        err |= RegisterCommand<CreateDoorsCommand> (
+            elementCommands, "1.5.0",
+            "Creates Door elements hosted on the given walls."
+        );
+        err |= RegisterCommand<CreateWindowsCommand> (
+            elementCommands, "1.5.0",
+            "Creates Window elements hosted on the given walls."
+        );
+        err |= RegisterCommand<CreateRoofsCommand> (
+            elementCommands, "1.5.0",
+            "Creates single-plane Roof elements based on the given parameters."
+        );
         err |= RegisterCommand<GetElementPreviewImageCommand> (
             elementCommands, "1.2.7",
             "Returns the preview image of the given element."

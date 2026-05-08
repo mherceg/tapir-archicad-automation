@@ -2,6 +2,7 @@
 #include "ObjectState.hpp"
 #include "MigrationHelper.hpp"
 #include "NotificationCommands.hpp"
+#include <cmath>
 
 CreateElementsCommandBase::CreateElementsCommandBase (const GS::String& commandNameIn, API_ElemTypeID elemTypeIDIn, const GS::String& arrayFieldNameIn)
     : CommandBase (CommonSchema::Used)
@@ -1114,6 +1115,451 @@ GS::Optional<GS::ObjectState> CreateLabelsCommand::SetTypeSpecificParameters (AP
         element.label.u.text.nonBreaking = true;
         element.label.u.text.useEolPos = true;
     }
+
+    return {};
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CreateWallsCommand
+// ─────────────────────────────────────────────────────────────────────────────
+
+CreateWallsCommand::CreateWallsCommand () :
+    CreateElementsCommandBase ("CreateWalls", API_WallID, "wallsData")
+{
+}
+
+GS::Optional<GS::UniString> CreateWallsCommand::GetInputParametersSchema () const
+{
+    return R"({
+    "type": "object",
+    "properties": {
+        "wallsData": {
+            "type": "array",
+            "description": "Array of data to create Walls.",
+            "items": {
+                "type": "object",
+                "description": "The parameters of the new Wall.",
+                "properties": {
+                    "begCoordinate": {
+                        "$ref": "#/Coordinate2D",
+                        "description": "The start point of the wall reference line."
+                    },
+                    "endCoordinate": {
+                        "$ref": "#/Coordinate2D",
+                        "description": "The end point of the wall reference line."
+                    },
+                    "height": {
+                        "type": "number",
+                        "description": "The height of the wall in metres."
+                    },
+                    "bottomOffset": {
+                        "type": "number",
+                        "description": "Vertical offset of the wall base from the floor level. Default: 0."
+                    },
+                    "offset": {
+                        "type": "number",
+                        "description": "Lateral offset of the wall body from the reference line. Default: 0."
+                    },
+                    "thickness": {
+                        "type": "number",
+                        "description": "Wall thickness in metres (used only when no composite or building material is provided)."
+                    },
+                    "floorIndex": {
+                        "type": "integer",
+                        "description": "Story (floor) index. Optional, uses the current story if omitted."
+                    },
+                    "layerAttributeId": {
+                        "$ref": "#/AttributeId",
+                        "description": "The identifier of the layer attribute."
+                    },
+                    "compositeAttributeId": {
+                        "$ref": "#/AttributeId",
+                        "description": "The identifier of the composite wall attribute. Takes precedence over buildingMaterialAttributeId."
+                    },
+                    "buildingMaterialAttributeId": {
+                        "$ref": "#/AttributeId",
+                        "description": "The identifier of the building material attribute (for single-skin walls)."
+                    }
+                },
+                "additionalProperties": false,
+                "required": [
+                    "begCoordinate",
+                    "endCoordinate",
+                    "height"
+                ]
+            }
+        }
+    },
+    "additionalProperties": false,
+    "required": [
+        "wallsData"
+    ]
+})";
+}
+
+GS::Optional<GS::ObjectState> CreateWallsCommand::SetTypeSpecificParameters (
+    API_Element& element, API_ElementMemo& /*memo*/, const Stories& /*stories*/, const GS::ObjectState& parameters) const
+{
+    GS::ObjectState begCoordinate;
+    GS::ObjectState endCoordinate;
+    if (!parameters.Get ("begCoordinate", begCoordinate) ||
+        !parameters.Get ("endCoordinate",  endCoordinate)) {
+        return CreateErrorResponse (APIERR_BADPARS, "Missing begCoordinate or endCoordinate.");
+    }
+    element.wall.begC = Get2DCoordinateFromObjectState (begCoordinate);
+    element.wall.endC = Get2DCoordinateFromObjectState (endCoordinate);
+
+    if (!parameters.Get ("height", element.wall.height)) {
+        return CreateErrorResponse (APIERR_BADPARS, "Missing height parameter.");
+    }
+
+    parameters.Get ("bottomOffset", element.wall.bottomOffset);
+    parameters.Get ("offset",       element.wall.offset);
+
+    parameters.Get ("floorIndex", element.header.floorInd);
+
+    const API_Guid layerGuid = GetGuidFromArrayItem ("layerAttributeId", parameters);
+    if (layerGuid != APINULLGuid) {
+        element.header.layer = GetAttributeIndexFromGuid (API_LayerID, layerGuid);
+    }
+
+    const API_Guid compositeGuid = GetGuidFromArrayItem ("compositeAttributeId", parameters);
+    if (compositeGuid != APINULLGuid) {
+        element.wall.composite              = GetAttributeIndexFromGuid (API_CompWallID, compositeGuid);
+        element.wall.modelElemStructureType = APIModelElemStructure_Composite;
+    } else {
+        const API_Guid bmGuid = GetGuidFromArrayItem ("buildingMaterialAttributeId", parameters);
+        if (bmGuid != APINULLGuid) {
+            element.wall.buildingMaterial       = GetAttributeIndexFromGuid (API_BuildingMaterialID, bmGuid);
+            element.wall.modelElemStructureType = APIModelElemStructure_Basic;
+        } else {
+            double thickness = 0.25;
+            parameters.Get ("thickness", thickness);
+            element.wall.thickness              = thickness;
+            element.wall.modelElemStructureType = APIModelElemStructure_Basic;
+        }
+    }
+
+    return {};
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared helper for CreateDoors / CreateWindows
+// ─────────────────────────────────────────────────────────────────────────────
+
+static GS::Optional<GS::ObjectState> SetOpeningParameters (
+    API_Element& element, const GS::ObjectState& parameters)
+{
+    // Host wall (required)
+    const API_Guid ownerGuid = GetGuidFromArrayItem ("hostWallId", parameters);
+    if (ownerGuid == APINULLGuid) {
+        return CreateErrorResponse (APIERR_BADPARS, "Missing or invalid hostWallId.");
+    }
+    element.window.owner = ownerGuid;
+
+    // Inherit floor from host wall
+    API_Elem_Head wallHead = {};
+    wallHead.guid = ownerGuid;
+    if (ACAPI_Element_GetHeader (&wallHead) == NoError) {
+        element.header.floorInd = wallHead.floorInd;
+    }
+
+    // Library part (optional – keep whatever GetDefaults supplied if omitted)
+    GS::UniString libPartName;
+    if (parameters.Get ("libraryPartName", libPartName) && !libPartName.IsEmpty ()) {
+        API_LibPart libPart = {};
+        GS::ucscpy (libPart.docu_UName, libPartName.ToUStr ());
+        GSErrCode err = ACAPI_LibraryPart_Search (&libPart, false, true);
+        delete libPart.location;
+        if (err != NoError) {
+            return CreateErrorResponse (err,
+                GS::UniString::Printf ("Library part not found: '%T'", libPartName.ToPrintf ()));
+        }
+        element.window.openingBase.libInd = libPart.index;
+    }
+
+    // Dimensions
+    double width = 0.0, height = 0.0;
+    if (parameters.Get ("openingWidth",  width)  && width  > 0.0) element.window.openingBase.width  = width;
+    if (parameters.Get ("openingHeight", height) && height > 0.0) element.window.openingBase.height = height;
+
+    // Position along wall from wall start (centre of the opening)
+    double position = 0.0;
+    if (parameters.Get ("position", position)) {
+        element.window.openingBase.objLoc = position;
+    }
+
+    // Sill height (floor-to-sill distance)
+    double sillHeight = 0.0;
+    if (parameters.Get ("sillHeight", sillHeight)) {
+        element.window.openingBase.subFloorThickness = sillHeight;
+    }
+
+    // Flip flags
+    bool flipX = false, flipY = false;
+    parameters.Get ("flipX", flipX);
+    parameters.Get ("flipY", flipY);
+    if (flipX) element.window.reflected = !element.window.reflected;
+    if (flipY) element.window.oSide     = !element.window.oSide;
+
+    // Layer
+    const API_Guid layerGuid = GetGuidFromArrayItem ("layerAttributeId", parameters);
+    if (layerGuid != APINULLGuid) {
+        element.header.layer = GetAttributeIndexFromGuid (API_LayerID, layerGuid);
+    }
+
+    return {};
+}
+
+static GS::UniString GetOpeningSchema (const GS::String& arrayFieldName, const GS::String& description)
+{
+    return GS::UniString::Printf (R"({
+    "type": "object",
+    "properties": {
+        "%s": {
+            "type": "array",
+            "description": "%s",
+            "items": {
+                "type": "object",
+                "description": "Parameters of a single opening.",
+                "properties": {
+                    "hostWallId": {
+                        "$ref": "#/ElementId",
+                        "description": "GUID of the host wall."
+                    },
+                    "libraryPartName": {
+                        "type": "string",
+                        "description": "Name of the library part. Uses the current default if omitted."
+                    },
+                    "position": {
+                        "type": "number",
+                        "description": "Distance from wall start to the centre of the opening, in metres."
+                    },
+                    "sillHeight": {
+                        "type": "number",
+                        "description": "Sill height (floor to sill bottom) in metres. Default: 0."
+                    },
+                    "openingWidth": {
+                        "type": "number",
+                        "description": "Opening width in metres."
+                    },
+                    "openingHeight": {
+                        "type": "number",
+                        "description": "Opening height in metres."
+                    },
+                    "flipX": {
+                        "type": "boolean",
+                        "description": "Flip the opening horizontally. Default: false."
+                    },
+                    "flipY": {
+                        "type": "boolean",
+                        "description": "Flip the opening to the other side of the wall. Default: false."
+                    },
+                    "layerAttributeId": {
+                        "$ref": "#/AttributeId",
+                        "description": "The identifier of the layer attribute."
+                    }
+                },
+                "additionalProperties": false,
+                "required": [
+                    "hostWallId"
+                ]
+            }
+        }
+    },
+    "additionalProperties": false,
+    "required": [
+        "%s"
+    ]
+})", arrayFieldName.ToPrintf (), description.ToPrintf (), arrayFieldName.ToPrintf ());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CreateDoorsCommand
+// ─────────────────────────────────────────────────────────────────────────────
+
+CreateDoorsCommand::CreateDoorsCommand () :
+    CreateElementsCommandBase ("CreateDoors", API_DoorID, "doorsData")
+{
+}
+
+GS::Optional<GS::UniString> CreateDoorsCommand::GetInputParametersSchema () const
+{
+    return GetOpeningSchema ("doorsData", "Array of data to create Doors.");
+}
+
+GS::Optional<GS::ObjectState> CreateDoorsCommand::SetTypeSpecificParameters (
+    API_Element& element, API_ElementMemo& /*memo*/, const Stories& /*stories*/, const GS::ObjectState& parameters) const
+{
+    return SetOpeningParameters (element, parameters);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CreateWindowsCommand
+// ─────────────────────────────────────────────────────────────────────────────
+
+CreateWindowsCommand::CreateWindowsCommand () :
+    CreateElementsCommandBase ("CreateWindows", API_WindowID, "windowsData")
+{
+}
+
+GS::Optional<GS::UniString> CreateWindowsCommand::GetInputParametersSchema () const
+{
+    return GetOpeningSchema ("windowsData", "Array of data to create Windows.");
+}
+
+GS::Optional<GS::ObjectState> CreateWindowsCommand::SetTypeSpecificParameters (
+    API_Element& element, API_ElementMemo& /*memo*/, const Stories& /*stories*/, const GS::ObjectState& parameters) const
+{
+    return SetOpeningParameters (element, parameters);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CreateRoofsCommand  (single-plane roofs only)
+// ─────────────────────────────────────────────────────────────────────────────
+
+CreateRoofsCommand::CreateRoofsCommand () :
+    CreateElementsCommandBase ("CreateRoofs", API_RoofID, "roofsData")
+{
+}
+
+GS::Optional<GS::UniString> CreateRoofsCommand::GetInputParametersSchema () const
+{
+    return R"({
+    "type": "object",
+    "properties": {
+        "roofsData": {
+            "type": "array",
+            "description": "Array of data to create single-plane Roofs.",
+            "items": {
+                "type": "object",
+                "description": "Parameters of the new Roof.",
+                "properties": {
+                    "outline": {
+                        "type": "array",
+                        "description": "2D outline polygon of the roof footprint (at least 3 points, do not repeat first point).",
+                        "items": {
+                            "$ref": "#/Coordinate2D"
+                        },
+                        "minItems": 3
+                    },
+                    "baseLevel": {
+                        "type": "number",
+                        "description": "Z coordinate of the pivot edge (metres, absolute)."
+                    },
+                    "pivotEdgeIndex": {
+                        "type": "integer",
+                        "description": "Index of the outline edge that acts as the pivot (low) edge. Default: 0."
+                    },
+                    "slope": {
+                        "type": "number",
+                        "description": "Roof slope as tan(angle). E.g. 0.20 ≈ 11.3°."
+                    },
+                    "thickness": {
+                        "type": "number",
+                        "description": "Roof thickness in metres. Default: 0.20."
+                    },
+                    "floorIndex": {
+                        "type": "integer",
+                        "description": "Story (floor) index. Optional."
+                    },
+                    "layerAttributeId": {
+                        "$ref": "#/AttributeId",
+                        "description": "The identifier of the layer attribute."
+                    },
+                    "compositeAttributeId": {
+                        "$ref": "#/AttributeId",
+                        "description": "The identifier of the composite attribute."
+                    },
+                    "buildingMaterialAttributeId": {
+                        "$ref": "#/AttributeId",
+                        "description": "The identifier of the building material attribute."
+                    }
+                },
+                "additionalProperties": false,
+                "required": [
+                    "outline",
+                    "baseLevel",
+                    "slope"
+                ]
+            }
+        }
+    },
+    "additionalProperties": false,
+    "required": [
+        "roofsData"
+    ]
+})";
+}
+
+GS::Optional<GS::ObjectState> CreateRoofsCommand::SetTypeSpecificParameters (
+    API_Element& element, API_ElementMemo& memo, const Stories& /*stories*/, const GS::ObjectState& parameters) const
+{
+    GS::Array<GS::ObjectState> outline;
+    if (!parameters.Get ("outline", outline) || outline.GetSize () < 3) {
+        return CreateErrorResponse (APIERR_BADPARS, "outline must have at least 3 coordinates.");
+    }
+
+    // Remove duplicate last point if the caller closed the polygon
+    if (IsSame2DCoordinate (outline.GetFirst (), outline.GetLast ())) {
+        outline.Pop ();
+    }
+
+    double baseLevel = 0.0;
+    parameters.Get ("baseLevel", baseLevel);
+    element.roof.level = baseLevel;
+
+    double slope = 0.20;
+    parameters.Get ("slope", slope);
+    element.roof.u.planeRoof.angle = std::atan (slope);
+    element.roof.u.planeRoof.posSign = 1;
+
+    Int32 pivotEdgeIndex = 0;
+    parameters.Get ("pivotEdgeIndex", pivotEdgeIndex);
+    const Int32 n = static_cast<Int32> (outline.GetSize ());
+    pivotEdgeIndex = ((pivotEdgeIndex % n) + n) % n; // guard against out-of-range
+    element.roof.u.planeRoof.baseLine.c1 = Get2DCoordinateFromObjectState (outline[pivotEdgeIndex]);
+    element.roof.u.planeRoof.baseLine.c2 = Get2DCoordinateFromObjectState (outline[(pivotEdgeIndex + 1) % n]);
+
+    element.roof.roofClass = API_PlaneRoofID;
+
+    double thickness = 0.20;
+    parameters.Get ("thickness", thickness);
+    element.roof.thickness = thickness;
+
+    parameters.Get ("floorIndex", element.header.floorInd);
+
+    const API_Guid layerGuid = GetGuidFromArrayItem ("layerAttributeId", parameters);
+    if (layerGuid != APINULLGuid) {
+        element.header.layer = GetAttributeIndexFromGuid (API_LayerID, layerGuid);
+    }
+
+    const API_Guid compositeGuid = GetGuidFromArrayItem ("compositeAttributeId", parameters);
+    if (compositeGuid != APINULLGuid) {
+        element.roof.composite              = GetAttributeIndexFromGuid (API_CompWallID, compositeGuid);
+        element.roof.modelElemStructureType = APIModelElemStructure_Composite;
+    } else {
+        const API_Guid bmGuid = GetGuidFromArrayItem ("buildingMaterialAttributeId", parameters);
+        if (bmGuid != APINULLGuid) {
+            element.roof.buildingMaterial       = GetAttributeIndexFromGuid (API_BuildingMaterialID, bmGuid);
+            element.roof.modelElemStructureType = APIModelElemStructure_Basic;
+        }
+    }
+
+    // Outline polygon into memo (same layout as Slab)
+    element.roof.poly.nCoords   = n + 1;
+    element.roof.poly.nSubPolys = 1;
+    element.roof.poly.nArcs     = 0;
+
+    memo.coords = reinterpret_cast<API_Coord**> (BMAllocateHandle ((n + 2) * sizeof (API_Coord),    ALLOCATE_CLEAR, 0));
+    memo.pends  = reinterpret_cast<Int32**>     (BMAllocateHandle (2       * sizeof (Int32),         ALLOCATE_CLEAR, 0));
+    memo.parcs  = reinterpret_cast<API_PolyArc**>(BMAllocateHandle (1      * sizeof (API_PolyArc),   ALLOCATE_CLEAR, 0));
+
+    for (Int32 i = 0; i < n; ++i) {
+        (*memo.coords)[i + 1] = Get2DCoordinateFromObjectState (outline[i]);
+    }
+    (*memo.coords)[n + 1] = (*memo.coords)[1]; // close polygon
+    (*memo.pends)[1] = n + 1;
 
     return {};
 }
