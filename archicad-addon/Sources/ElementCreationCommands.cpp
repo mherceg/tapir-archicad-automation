@@ -1506,14 +1506,27 @@ GS::Optional<GS::ObjectState> CreateRoofsCommand::SetTypeSpecificParameters (
         outline.Pop ();
     }
 
-    // GetDefaults gives us a PolyRoof — switch to PlaneRoof. Wipe the entire
-    // union (PolyRoofData is bigger than PlaneRoofData, so {}-init of the
-    // member alone leaves trailing bytes), and dispose the polyroof-specific
-    // memo handles so they don't conflict with our plane-roof polygon below.
+    // The base class calls GetDefaults BEFORE we run, with no roofClass
+    // pre-set, so it returns PolyRoof defaults. Per the AC SDK sample
+    // (Element_Basics.cpp Do_CreatePolyRoof), the roofClass must be set
+    // before GetDefaults is called. Reset, set PlaneRoof, and re-default.
     ACAPI_DisposeElemMemoHdls (&memo);
     memo = {};
-    element.roof.roofClass = API_PlaneRoofID;
-    std::memset (&element.roof.u, 0, sizeof (element.roof.u));
+    const short      savedFloorInd = element.header.floorInd;
+    const API_Guid   savedGuid     = element.header.guid;
+    element = {};
+#ifdef ServerMainVers_2600
+    element.header.type   = API_RoofID;
+#else
+    element.header.typeID = API_RoofID;
+#endif
+    element.header.floorInd = savedFloorInd;
+    element.header.guid     = savedGuid;
+    element.roof.roofClass  = API_PlaneRoofID;
+    GSErrCode redefErr = ACAPI_Element_GetDefaults (&element, nullptr);
+    if (redefErr != NoError) {
+        return CreateErrorResponse (redefErr, "Failed to fetch plane-roof defaults.");
+    }
 
     // shellBase.level is documented as offset from the floor level, not absolute z.
     // Derive both floor index and offset from the absolute baseLevel (Slab pattern).
