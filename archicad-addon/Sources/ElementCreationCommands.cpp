@@ -1569,24 +1569,30 @@ GS::Optional<GS::ObjectState> CreateRoofsCommand::SetTypeSpecificParameters (
         }
     }
 
-    // Outline polygon into memo (same layout as Slab — incl. edgeTrims/sideMaterials,
-    // because the API validator rejects roof polygons missing per-edge data).
-    element.roof.u.planeRoof.poly.nCoords   = n + 1;
-    element.roof.u.planeRoof.poly.nSubPolys = 1;
-    element.roof.u.planeRoof.poly.nArcs     = 0;
+    // Outline polygon into memo, following CreateSlabsCommand's exact allocation
+    // sizes. Critically, memo.parcs is allocated nArcs * sizeof(API_PolyArc) — 0
+    // bytes when there are no arcs — because the API derives nArcs from the
+    // handle size; allocating a stray empty slot makes the validator try to
+    // read a zeroed arc and reject the polygon (APIERR_BADPOLY).
+    const Int32 nCoordsSlot = n + 1;            // including the closing duplicate
+    const Int32 nSubPolys   = 1;
+    const Int32 nArcs       = 0;
+    element.roof.u.planeRoof.poly.nCoords   = nCoordsSlot;
+    element.roof.u.planeRoof.poly.nSubPolys = nSubPolys;
+    element.roof.u.planeRoof.poly.nArcs     = nArcs;
 
-    memo.coords        = reinterpret_cast<API_Coord**>            (BMAllocateHandle ((n + 2) * sizeof (API_Coord),               ALLOCATE_CLEAR, 0));
-    memo.edgeTrims     = reinterpret_cast<API_EdgeTrim**>         (BMAllocateHandle ((n + 2) * sizeof (API_EdgeTrim),            ALLOCATE_CLEAR, 0));
-    memo.sideMaterials = reinterpret_cast<API_OverriddenAttribute*>(BMAllocatePtr   ((n + 2) * sizeof (API_OverriddenAttribute), ALLOCATE_CLEAR, 0));
-    memo.pends         = reinterpret_cast<Int32**>                (BMAllocateHandle (2       * sizeof (Int32),                   ALLOCATE_CLEAR, 0));
-    memo.parcs         = reinterpret_cast<API_PolyArc**>          (BMAllocateHandle (1       * sizeof (API_PolyArc),             ALLOCATE_CLEAR, 0));
+    memo.coords        = reinterpret_cast<API_Coord**>            (BMAllocateHandle ((nCoordsSlot + 1) * sizeof (API_Coord),               ALLOCATE_CLEAR, 0));
+    memo.edgeTrims     = reinterpret_cast<API_EdgeTrim**>         (BMAllocateHandle ((nCoordsSlot + 1) * sizeof (API_EdgeTrim),            ALLOCATE_CLEAR, 0));
+    memo.sideMaterials = reinterpret_cast<API_OverriddenAttribute*>(BMAllocatePtr   ((nCoordsSlot + 1) * sizeof (API_OverriddenAttribute), ALLOCATE_CLEAR, 0));
+    memo.pends         = reinterpret_cast<Int32**>                (BMAllocateHandle ((nSubPolys + 1)   * sizeof (Int32),                   ALLOCATE_CLEAR, 0));
+    memo.parcs         = reinterpret_cast<API_PolyArc**>          (BMAllocateHandle (nArcs             * sizeof (API_PolyArc),             ALLOCATE_CLEAR, 0));
 
     const API_EdgeTrimID edgeTrimSideType = APIEdgeTrim_Vertical;
     for (Int32 i = 0; i < n; ++i) {
-        (*memo.coords)[i + 1]            = Get2DCoordinateFromObjectState (outline[i]);
+        (*memo.coords)[i + 1]             = Get2DCoordinateFromObjectState (outline[i]);
         (*memo.edgeTrims)[i + 1].sideType = edgeTrimSideType;
     }
-    (*memo.coords)[n + 1]            = (*memo.coords)[1]; // close polygon
+    (*memo.coords)[n + 1]             = (*memo.coords)[1]; // close polygon
     (*memo.edgeTrims)[n + 1].sideType = edgeTrimSideType;
     (*memo.pends)[1] = n + 1;
 
