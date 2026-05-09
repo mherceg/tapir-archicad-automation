@@ -335,6 +335,10 @@ GSErrCode Initialize (void)
             elementCommands, "1.5.0",
             "Creates single-plane Roof elements based on the given parameters."
         );
+        err |= RegisterCommand<CreateStairsCommand> (
+            elementCommands, "1.5.0",
+            "Creates Stair elements based on the given parameters."
+        );
         err |= RegisterCommand<GetElementPreviewImageCommand> (
             elementCommands, "1.2.7",
             "Returns the preview image of the given element."

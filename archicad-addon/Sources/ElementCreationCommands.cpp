@@ -1535,3 +1535,111 @@ GS::Optional<GS::ObjectState> CreateRoofsCommand::SetTypeSpecificParameters (API
 
     return {};
 }
+
+CreateStairsCommand::CreateStairsCommand () :
+    CreateElementsCommandBase ("CreateStairs", API_StairID, "stairsData")
+{
+}
+
+GS::Optional<GS::UniString> CreateStairsCommand::GetInputParametersSchema () const
+{
+    return R"({
+    "type": "object",
+    "properties": {
+        "stairsData": {
+            "type": "array",
+            "description": "Array of data to create Stairs.",
+            "items": {
+                "type": "object",
+                "description": "The parameters of the new Stair.",
+                "properties": {
+                    "polylineCoordinates": {
+                        "type": "array",
+                        "description": "The 2D vertices of the stair baseline. A multi-segment polyline produces a multi-flight stair with landings at each interior vertex.",
+                        "items": {
+                            "$ref": "#/Coordinate2D"
+                        },
+                        "minItems": 2
+                    },
+                    "totalHeight": {
+                        "type": "number",
+                        "description": "Total height of the stair (typically the story-to-story rise)."
+                    },
+                    "riserHeight": {
+                        "type": "number",
+                        "description": "Height of each riser. Optional; if omitted the Archicad default is used."
+                    },
+                    "treadDepth": {
+                        "type": "number",
+                        "description": "Depth (going) of each tread. Optional."
+                    },
+                    "flightWidth": {
+                        "type": "number",
+                        "description": "Width of the stair flight. Optional."
+                    },
+                    "floorIndex": {
+                        "type": "integer",
+                        "description": "Story (floor) index. Optional, defaults to the current story."
+                    },
+                    "layerAttributeId": {
+                        "$ref": "#/AttributeId",
+                        "description": "The identifier of the layer attribute."
+                    }
+                },
+                "additionalProperties": false,
+                "required": [
+                    "polylineCoordinates",
+                    "totalHeight"
+                ]
+            }
+        }
+    },
+    "additionalProperties": false,
+    "required": [
+        "stairsData"
+    ]
+})";
+}
+
+GS::Optional<GS::ObjectState> CreateStairsCommand::SetTypeSpecificParameters (API_Element& element, API_ElementMemo& memo, const Stories& /*stories*/, const GS::ObjectState& parameters) const
+{
+    GS::Array<GS::ObjectState> polylineCoordinates;
+    if (!parameters.Get ("polylineCoordinates", polylineCoordinates) || polylineCoordinates.GetSize () < 2) {
+        return CreateErrorResponse (APIERR_BADPARS, "polylineCoordinates must have at least 2 points.");
+    }
+    if (!parameters.Get ("totalHeight", element.stair.totalHeight)) {
+        return CreateErrorResponse (APIERR_BADPARS, "Missing totalHeight parameter.");
+    }
+
+    parameters.Get ("riserHeight", element.stair.riserHeight);
+    parameters.Get ("treadDepth",  element.stair.treadDepth);
+    parameters.Get ("flightWidth", element.stair.flightWidth);
+    parameters.Get ("floorIndex",  element.header.floorInd);
+
+    element.stair.baselinePosition = APILP_Center;
+
+    const API_Guid layerGuid = GetGuidFromArrayItem ("layerAttributeId", parameters);
+    if (layerGuid != APINULLGuid) {
+        element.header.layer = GetAttributeIndexFromGuid (API_LayerID, layerGuid);
+    }
+
+    // Stairs use memo.stairBaseLine (an open polyline) rather than memo.coords.
+    // Layout follows the SDK Element_Basics.cpp Do_CreateStair sample, with the
+    // same parcs-handle invariant as CreateRoofs/CreateSlabs: nArcs * sizeof,
+    // 0 bytes when there are no arcs.
+    const Int32 n = static_cast<Int32> (polylineCoordinates.GetSize ());
+    memo.stairBaseLine.polygon.nCoords   = n;
+    memo.stairBaseLine.polygon.nSubPolys = 1;
+    memo.stairBaseLine.polygon.nArcs     = 0;
+
+    memo.stairBaseLine.coords = reinterpret_cast<API_Coord**>   (BMAllocateHandle ((n + 1) * sizeof (API_Coord),   ALLOCATE_CLEAR, 0));
+    memo.stairBaseLine.pends  = reinterpret_cast<Int32**>       (BMAllocateHandle (2       * sizeof (Int32),       ALLOCATE_CLEAR, 0));
+    memo.stairBaseLine.parcs  = reinterpret_cast<API_PolyArc**> (BMAllocateHandle (0       * sizeof (API_PolyArc), ALLOCATE_CLEAR, 0));
+
+    for (Int32 i = 0; i < n; ++i) {
+        (*memo.stairBaseLine.coords)[i + 1] = Get2DCoordinateFromObjectState (polylineCoordinates[i]);
+    }
+    (*memo.stairBaseLine.pends)[1] = n;
+
+    return {};
+}
